@@ -720,14 +720,16 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 					return
 				}
 				if len(chunk.Payload) > 0 {
+					payload := chunk.Payload
 					if handlerType == "openai-response" {
-						if err := validateSSEDataJSON(chunk.Payload); err != nil {
+						payload = normalizeOpenAIResponsesSSEChunk(payload)
+						if err := validateSSEDataJSON(payload); err != nil {
 							_ = sendErr(&interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: err})
 							return
 						}
 					}
 					sentPayload = true
-					if okSendData := sendData(cloneBytes(chunk.Payload)); !okSendData {
+					if okSendData := sendData(cloneBytes(payload)); !okSendData {
 						return
 					}
 				}
@@ -735,6 +737,84 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 		}
 	}()
 	return dataChan, upstreamHeaders, errChan
+}
+
+func normalizeOpenAIResponsesSSEChunk(chunk []byte) []byte {
+	if len(chunk) == 0 {
+		return nil
+	}
+
+	var out []byte
+	remaining := chunk
+	for len(remaining) > 0 {
+		line := remaining
+		newline := []byte(nil)
+		if i := bytes.IndexByte(remaining, '\n'); i >= 0 {
+			line = remaining[:i]
+			remaining = remaining[i+1:]
+			newline = []byte{'\n'}
+			if len(line) > 0 && line[len(line)-1] == '\r' {
+				line = line[:len(line)-1]
+				newline = []byte{'\r', '\n'}
+			}
+		} else {
+			remaining = nil
+		}
+
+		out = append(out, normalizeDoubleWrappedSSELine(line)...)
+		out = append(out, newline...)
+	}
+
+	return out
+}
+
+func normalizeDoubleWrappedSSELine(line []byte) []byte {
+	if len(line) == 0 {
+		return nil
+	}
+
+	trimmedLeft := bytes.TrimLeft(line, " \t")
+	if !bytes.HasPrefix(trimmedLeft, []byte("data:")) {
+		return append([]byte(nil), line...)
+	}
+
+	leading := line[:len(line)-len(trimmedLeft)]
+	payload := bytes.TrimSpace(trimmedLeft[len("data:"):])
+	for {
+		inner := bytes.TrimSpace(payload)
+		if !bytes.HasPrefix(inner, []byte("data:")) {
+			break
+		}
+		inner = bytes.TrimSpace(inner[len("data:"):])
+		if !hasSSEFieldPrefix(inner) {
+			break
+		}
+		payload = inner
+	}
+
+	if hasSSEFieldPrefix(payload) {
+		out := make([]byte, 0, len(leading)+len(payload))
+		out = append(out, leading...)
+		out = append(out, payload...)
+		return out
+	}
+
+	return append([]byte(nil), line...)
+}
+
+func hasSSEFieldPrefix(payload []byte) bool {
+	for _, prefix := range [][]byte{
+		[]byte("data:"),
+		[]byte("event:"),
+		[]byte("id:"),
+		[]byte("retry:"),
+		[]byte(":"),
+	} {
+		if bytes.HasPrefix(payload, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateSSEDataJSON(chunk []byte) error {

@@ -18,6 +18,7 @@ import (
 	. "github.com/router-for-me/CLIProxyAPI/v6/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -255,6 +256,15 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 		return
 	}
 
+	// Ensure modelVersion is present for OpenAI/Codex upstream compatibility.
+	if !gjson.GetBytes(rawJSON, "modelVersion").Exists() {
+		if providers := util.GetProviderName(gjson.GetBytes(rawJSON, "model").String()); isOpenAIProvider(providers) {
+			if updated, err := sjson.SetBytes(rawJSON, "modelVersion", "2.0"); err == nil {
+				rawJSON = updated
+			}
+		}
+	}
+
 	// Check if the client requested a streaming response.
 	streamResult := gjson.GetBytes(rawJSON, "stream")
 	if streamResult.Type == gjson.True {
@@ -275,6 +285,15 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 			},
 		})
 		return
+	}
+
+	// Ensure modelVersion is present for OpenAI/Codex upstream compatibility.
+	if !gjson.GetBytes(rawJSON, "modelVersion").Exists() {
+		if providers := util.GetProviderName(gjson.GetBytes(rawJSON, "model").String()); isOpenAIProvider(providers) {
+			if updated, err := sjson.SetBytes(rawJSON, "modelVersion", "2.0"); err == nil {
+				rawJSON = updated
+			}
+		}
 	}
 
 	streamResult := gjson.GetBytes(rawJSON, "stream")
@@ -443,4 +462,14 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 			_, _ = c.Writer.Write([]byte("\n"))
 		},
 	})
+}
+
+// isOpenAIProvider returns true if the provider list contains an OpenAI or Codex provider.
+func isOpenAIProvider(providers []string) bool {
+	for _, p := range providers {
+		if p == OpenAI || p == Codex {
+			return true
+		}
+	}
+	return false
 }
